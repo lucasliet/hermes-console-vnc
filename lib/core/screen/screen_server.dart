@@ -21,21 +21,3 @@ Uri screenAssetPageUri(String wsUrl, {Map<String, String> copy = const {}}) {
     queryParameters: query,
   );
 }
-
-/// Asset key for a request path under the vendored noVNC tree, or null when
-/// the path escapes that tree.
-String? safeNovncAssetKey(String urlPath) {
-  var rel = urlPath;
-  if (rel.startsWith('/')) rel = rel.substring(1);
-  if (rel.isEmpty || rel.endsWith('/')) {
-    rel = rel.endsWith('/') ? '${rel}bridge.html' : 'bridge.html';
-  }
-  if (rel.contains('\\') || rel.contains('\u0000')) return null;
-  final segments = rel.split('/');
-  if (segments.any(
-    (segment) => segment.isEmpty || segment == '.' || segment == '..',
-  )) {
-    return null;
-  }
-  return 'assets/novnc/$rel';
-}

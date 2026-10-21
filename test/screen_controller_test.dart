@@ -300,16 +300,6 @@ void main() {
     },
   );
 
-  test('noVNC asset keys stay inside the vendored tree', () {
-    expect(safeNovncAssetKey('/bridge.html'), 'assets/novnc/bridge.html');
-    expect(safeNovncAssetKey('/core/rfb.js'), 'assets/novnc/core/rfb.js');
-    expect(safeNovncAssetKey('/'), 'assets/novnc/bridge.html');
-    expect(safeNovncAssetKey('/../pubspec.yaml'), isNull);
-    expect(safeNovncAssetKey('/core/../../pubspec.yaml'), isNull);
-    expect(safeNovncAssetKey('/core/./rfb.js'), isNull);
-    expect(safeNovncAssetKey('/core\\rfb.js'), isNull);
-  });
-
   test('the noVNC page is https on the asset host and cannot leave it', () {
     final page = screenAssetPageUri(
       'wss://dash.example/api/display/ws?display_ticket=t',

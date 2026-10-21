@@ -30,14 +30,28 @@ NavigationDecision screenNavigationDecision(Uri page, String requestUrl) {
 ///
 /// Tests and other platforms leave the WebView as the caller configured it.
 /// The page is then loaded from `https://appassets.androidplatform.net`,
-/// which the loader serves from the app bundle.
-Future<void> installScreenAssetHost(WebViewController controller) async {
+/// which the loader serves from the app bundle. The loader replaces the
+/// WebView client, so it also enforces the navigation rule of
+/// [screenNavigationDecision] and reports a failed asset through
+/// [onLoadFailed].
+Future<void> installScreenAssetHost(
+  WebViewController controller, {
+  VoidCallback? onLoadFailed,
+}) async {
   if (defaultTargetPlatform != TargetPlatform.android) return;
   final platform = controller.platform;
   if (platform is! AndroidWebViewController) return;
-  await const MethodChannel(
-    screenAssetChannelName,
-  ).invokeMethod<void>('install', platform.webViewIdentifier);
+  const channel = MethodChannel(screenAssetChannelName);
+  channel.setMethodCallHandler((call) async {
+    if (call.method == 'loadFailed') onLoadFailed?.call();
+  });
+  await channel.invokeMethod<void>('install', platform.webViewIdentifier);
+}
+
+/// Stops listening for asset failures from the on-device asset loader.
+void releaseScreenAssetHost() {
+  if (defaultTargetPlatform != TargetPlatform.android) return;
+  const MethodChannel(screenAssetChannelName).setMethodCallHandler(null);
 }
 
 /// noVNC page served by the Android asset loader.
@@ -103,7 +117,12 @@ class _TakeoverViewState extends State<TakeoverView> {
         ),
       );
       await _lockDown(controller);
-      await installScreenAssetHost(controller);
+      await installScreenAssetHost(
+        controller,
+        onLoadFailed: () {
+          if (mounted) widget.onUnavailable?.call();
+        },
+      );
       if (!mounted) return;
       await controller.loadRequest(widget.pageUri);
     } catch (_) {
@@ -128,6 +147,12 @@ class _TakeoverViewState extends State<TakeoverView> {
           const GeolocationPermissionsResponse(allow: false, retain: false),
     );
     await platform.setOnShowFileSelector((_) async => const <String>[]);
+  }
+
+  @override
+  void dispose() {
+    releaseScreenAssetHost();
+    super.dispose();
   }
 
   @override

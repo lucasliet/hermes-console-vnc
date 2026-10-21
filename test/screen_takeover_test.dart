@@ -372,7 +372,7 @@ void main() {
     webPlatform.last.channelHandlers['TakeoverChannel']!(
       const JavaScriptMessage(message: 'lost'),
     );
-    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
     await tester.pump();
     expect(observes, 2);
     expect(
@@ -495,6 +495,143 @@ void main() {
     ]);
   });
 
+  testWidgets('a socket that keeps dropping stops retrying on its own', (
+    tester,
+  ) async {
+    final gateway = _FakeGateway();
+    await _pump(tester, TakeoverScreen(controller: _controller(gateway.call)));
+    await tester.pump();
+    await tester.pump();
+    expect(gateway.count('display.observe'), 1);
+
+    await _bridge(tester, webPlatform, 'lost');
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(gateway.count('display.observe'), 2);
+
+    await _bridge(tester, webPlatform, 'lost');
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pump();
+    expect(gateway.count('display.observe'), 2);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(gateway.count('display.observe'), 3);
+
+    await _bridge(tester, webPlatform, 'lost');
+    await tester.pump(const Duration(minutes: 1));
+    await tester.pump();
+    expect(gateway.count('display.observe'), 3);
+
+    await _bridge(tester, webPlatform, 'reconnect');
+    await tester.pump();
+    await tester.pump();
+    expect(gateway.count('display.observe'), 4);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('a connected page restores the automatic reconnect budget', (
+    tester,
+  ) async {
+    final gateway = _FakeGateway();
+    await _pump(tester, TakeoverScreen(controller: _controller(gateway.call)));
+    await tester.pump();
+    await tester.pump();
+    for (var round = 2; round <= 5; round++) {
+      await _bridge(tester, webPlatform, 'lost');
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+      expect(gateway.count('display.observe'), round);
+      await _bridge(tester, webPlatform, 'connected');
+    }
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('a lost socket never retakes a lease another client holds', (
+    tester,
+  ) async {
+    final leases = StreamController<Map<String, dynamic>>.broadcast();
+    addTearDown(leases.close);
+    final gateway = _FakeGateway();
+    await _pump(
+      tester,
+      TakeoverScreen(
+        controller: _controller(gateway.call, leases: leases.stream),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    leases.add({
+      'lease': {
+        'holder': 'human',
+        'viewer_hash': 'hash-other',
+        'epoch': 3,
+        'since': 2,
+      },
+    });
+    await tester.pump();
+    expect(find.text('Otro cliente asumió el control.'), findsOneWidget);
+
+    gateway.viewer = 'viewer-2';
+    await _bridge(tester, webPlatform, 'lost');
+    await tester.pump(const Duration(seconds: 10));
+    await tester.pump();
+    expect(gateway.count('display.observe'), 1);
+
+    await _bridge(tester, webPlatform, 'reconnect');
+    await tester.pump();
+    await tester.pump();
+    expect(gateway.count('display.observe'), 2);
+    expect(gateway.count('display.lease.acquire'), 1);
+    expect(find.text('Otro cliente asumió el control.'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('coming back to the app takes the screen again when it is free', (
+    tester,
+  ) async {
+    final gateway = _FakeGateway();
+    await _pump(tester, TakeoverScreen(controller: _controller(gateway.call)));
+    await tester.pump();
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    expect(gateway.count('display.lease.release'), 1);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump();
+    expect(gateway.count('display.observe'), 2);
+    expect(gateway.count('display.lease.acquire'), 2);
+    expect(find.text('Otro cliente asumió el control.'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('coming back to the app does not take a screen a person holds', (
+    tester,
+  ) async {
+    final gateway = _FakeGateway();
+    await _pump(tester, TakeoverScreen(controller: _controller(gateway.call)));
+    await tester.pump();
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+
+    gateway.observedLease = {
+      'holder': 'human',
+      'viewer_hash': 'hash-other',
+      'epoch': 3,
+      'since': 2,
+    };
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump();
+    expect(gateway.count('display.observe'), 2);
+    expect(gateway.count('display.lease.acquire'), 1);
+    expect(find.text('Otro cliente asumió el control.'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('el vistazo no pregunta mientras el control está abierto', (
     tester,
   ) async {
@@ -579,4 +716,56 @@ Future<void> _pump(WidgetTester tester, Widget home) {
       home: home,
     ),
   );
+}
+
+Future<void> _bridge(
+  WidgetTester tester,
+  FakeWebViewPlatform platform,
+  String message,
+) async {
+  platform.last.channelHandlers['TakeoverChannel']!(
+    JavaScriptMessage(message: message),
+  );
+  await tester.pump();
+}
+
+/// Gateway stub: each observe mints `ticket-N` for [viewer] and reports
+/// [observedLease]; an acquire always answers with this client's lease.
+class _FakeGateway {
+  String viewer = 'viewer-1';
+  Map<String, dynamic> observedLease = {
+    'holder': 'agent',
+    'epoch': 1,
+    'since': 1,
+  };
+  final calls = <String>[];
+
+  int count(String method) => calls.where((call) => call == method).length;
+
+  Future<Map<String, dynamic>> call(
+    String method,
+    Map<String, dynamic> params,
+  ) async {
+    calls.add(method);
+    if (method == 'display.observe') {
+      return {
+        ..._runtime(),
+        'lease': observedLease,
+        'ticket': 'ticket-${count(method)}',
+        'viewer_id': viewer,
+        'path': '/api/display/ws',
+      };
+    }
+    if (method == 'display.lease.acquire') {
+      return {
+        'lease': {
+          'holder': 'human',
+          'viewer_hash': 'hash-us',
+          'epoch': 2,
+          'since': 1,
+        },
+      };
+    }
+    return _runtime();
+  }
 }

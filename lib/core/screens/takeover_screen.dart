@@ -13,6 +13,9 @@ import '../widgets/hermes_app_bar.dart';
 
 enum _Phase { checking, stopped, starting, acquiring, active, failed }
 
+/// Waits before each automatic reconnect of a lost display socket.
+const _reconnectDelays = [Duration(seconds: 1), Duration(seconds: 3)];
+
 /// Full control of the bot's desktop over the display websocket.
 class TakeoverScreen extends StatefulWidget {
   /// Creates a takeover for [controller].
@@ -47,6 +50,8 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   var _holding = false;
   var _foreground = true;
   var _refreshing = false;
+  var _retries = 0;
+  Timer? _retryTimer;
   var _ourViewerHash = '';
   var _ourEpoch = 0;
   ScreenFailureKind? _failure;
@@ -168,7 +173,11 @@ class _TakeoverScreenState extends State<TakeoverScreen>
     }
   }
 
-  /// Replaces the single-use display ticket, and the lease when the viewer changes.
+  /// Replaces the single-use display ticket.
+  ///
+  /// The lease is taken again only when this screen no longer holds it (the
+  /// app was in the background) or the gateway minted a new viewer id, and
+  /// never when another client has taken the screen in the meantime.
   Future<void> _refreshTicket() async {
     if (_refreshing || widget.readOnly || !_foreground) return;
     _refreshing = true;
@@ -177,7 +186,13 @@ class _TakeoverScreenState extends State<TakeoverScreen>
       if (!mounted) return;
       final page = _pageFor(session);
       final previous = _session;
-      if (previous == null || previous.viewerId != session.viewerId) {
+      final retake = previous == null || previous.viewerId != session.viewerId;
+      if (_releasedByOther ||
+          (retake && _heldByAnother(session.runtime.lease))) {
+        _session = session;
+        _holding = false;
+        _releasedByOther = true;
+      } else if (retake) {
         if (previous != null) _releaseLease();
         final lease = await widget.controller.acquire(
           session.viewerId,
@@ -198,6 +213,13 @@ class _TakeoverScreenState extends State<TakeoverScreen>
     }
   }
 
+  /// Whether [lease] is held by a person other than this viewer.
+  bool _heldByAnother(DisplayLeaseInfo lease) =>
+      lease.heldByHuman &&
+      lease.viewerHash.isNotEmpty &&
+      _ourViewerHash.isNotEmpty &&
+      lease.viewerHash != _ourViewerHash;
+
   void _remember(DisplaySession session, DisplayLeaseInfo lease) {
     _session = session;
     _ourViewerHash = lease.viewerHash;
@@ -213,10 +235,31 @@ class _TakeoverScreenState extends State<TakeoverScreen>
     );
   }
 
+  /// Reacts to the page's status tokens.
+  ///
+  /// A lost socket is retried on its own a few times, spaced out, so a dead
+  /// display cannot make this screen mint tickets in a loop. After that the
+  /// page waits for a tap, which sends `reconnect`.
   void _onBridge(String message) {
-    if (message != 'lost' && message != 'reconnect') return;
     if (!_foreground || _phase != _Phase.active) return;
-    unawaited(_refreshTicket());
+    switch (message) {
+      case 'connected':
+        _retries = 0;
+      case 'lost':
+        _scheduleReconnect();
+      case 'reconnect':
+        _retries = 0;
+        _retryTimer?.cancel();
+        unawaited(_refreshTicket());
+    }
+  }
+
+  void _scheduleReconnect() {
+    if (_releasedByOther || _retries >= _reconnectDelays.length) return;
+    _retryTimer?.cancel();
+    _retryTimer = Timer(_reconnectDelays[_retries++], () {
+      if (mounted) unawaited(_refreshTicket());
+    });
   }
 
   void _onLease(DisplayLeaseInfo lease) {
@@ -232,6 +275,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   }
 
   void _releaseAndClose() {
+    _retryTimer?.cancel();
     _releaseLease();
     if (mounted) Navigator.of(context).pop();
   }
@@ -248,6 +292,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _retryTimer?.cancel();
     unawaited(_events?.cancel() ?? Future<void>.value());
     _releaseLease();
     super.dispose();
@@ -303,6 +348,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
                           pageUri: page,
                           onBridgeMessage: _onBridge,
                           onUnavailable: () {
+                            if (_phase != _Phase.active) return;
                             _releaseLease();
                             if (!mounted) return;
                             setState(
