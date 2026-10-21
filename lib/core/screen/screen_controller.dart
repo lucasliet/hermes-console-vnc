@@ -110,13 +110,16 @@ class DisplayLeaseInfo {
 
 /// Whether [lease] means this viewer no longer holds the screen.
 ///
-/// A non-human holder always counts. A human holder counts only when both
+/// Events older than [ourEpoch] are ignored. A non-human holder of this
+/// epoch or a later one always counts. A human holder counts only when both
 /// sides have a viewer hash and they differ, which is how the gateway lets
 /// the current holder recognise itself.
 bool displayLeaseTakenOver(
   DisplayLeaseInfo lease, {
   required String ourViewerHash,
+  required int ourEpoch,
 }) {
+  if (lease.epoch < ourEpoch) return false;
   if (!lease.heldByHuman) return true;
   if (ourViewerHash.isEmpty || lease.viewerHash.isEmpty) return false;
   return lease.viewerHash != ourViewerHash;

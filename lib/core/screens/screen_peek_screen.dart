@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -54,7 +55,7 @@ class ScreenPeekScreen extends StatefulWidget {
 class _ScreenPeekScreenState extends State<ScreenPeekScreen> {
   late final ScreenController _controller;
   Timer? _timer;
-  String? _frameDataUrl;
+  Uint8List? _frameBytes;
   var _phase = _PeekPhase.loading;
   var _suppressed = false;
   var _inFlight = false;
@@ -95,17 +96,18 @@ class _ScreenPeekScreenState extends State<ScreenPeekScreen> {
       if (!status.running) {
         setState(() {
           _phase = _PeekPhase.stopped;
-          _frameDataUrl = null;
+          _frameBytes = null;
           _suppressed = false;
         });
         return;
       }
       final frame = await _controller.thumbnail(profile: widget.profile);
       if (!mounted) return;
+      final bytes = _decodeFrame(frame.dataUrl);
       setState(() {
         _suppressed = frame.suppressedByHuman;
-        if (frame.dataUrl.isNotEmpty) {
-          _frameDataUrl = frame.dataUrl;
+        if (bytes != null) {
+          _frameBytes = bytes;
           _phase = _PeekPhase.live;
         } else if (_suppressed) {
           _phase = _PeekPhase.suppressed;
@@ -142,8 +144,10 @@ class _ScreenPeekScreenState extends State<ScreenPeekScreen> {
     }
   }
 
-  void _takeover() {
-    Navigator.of(context).push(
+  Future<void> _takeover() async {
+    _timer?.cancel();
+    _timer = null;
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => TakeoverScreen(
           controller: _controller,
@@ -152,6 +156,9 @@ class _ScreenPeekScreenState extends State<ScreenPeekScreen> {
         ),
       ),
     );
+    if (!mounted) return;
+    _timer = Timer.periodic(screenPeekPollInterval, (_) => unawaited(_poll()));
+    unawaited(_poll());
   }
 
   @override
@@ -206,7 +213,7 @@ class _ScreenPeekScreenState extends State<ScreenPeekScreen> {
                       )
                     else
                       FilledButton.icon(
-                        onPressed: _takeover,
+                        onPressed: () => unawaited(_takeover()),
                         icon: const Icon(Icons.front_hand_outlined),
                         label: Text(strings.screenTakeover),
                       ),
@@ -221,17 +228,14 @@ class _ScreenPeekScreenState extends State<ScreenPeekScreen> {
 
   Widget _body(Strings strings, HermesThemeColors colors) {
     return switch (_phase) {
-      _PeekPhase.live => _FrameView(
-        dataUrl: _frameDataUrl!,
-        dimmed: _suppressed,
-      ),
+      _PeekPhase.live => _FrameView(bytes: _frameBytes!, dimmed: _suppressed),
       _PeekPhase.suppressed => _Message(
         colors: colors,
         icon: Icons.back_hand_outlined,
-        message: _frameDataUrl == null ? strings.screenSuppressed : null,
-        child: _frameDataUrl == null
+        message: _frameBytes == null ? strings.screenSuppressed : null,
+        child: _frameBytes == null
             ? null
-            : _FrameView(dataUrl: _frameDataUrl!, dimmed: true),
+            : _FrameView(bytes: _frameBytes!, dimmed: true),
       ),
       _PeekPhase.stopped => _Stopped(
         colors: colors,
@@ -257,46 +261,38 @@ class _ScreenPeekScreenState extends State<ScreenPeekScreen> {
 bool _unsupported(Object error) =>
     error is TuiGatewayRpcError && error.code == -32601;
 
-class _FrameView extends StatelessWidget {
-  const _FrameView({required this.dataUrl, this.dimmed = false});
+Uint8List? _decodeFrame(String dataUrl) {
+  final comma = dataUrl.indexOf(',');
+  if (comma < 0) return null;
+  try {
+    return base64Decode(dataUrl.substring(comma + 1));
+  } on FormatException {
+    return null;
+  }
+}
 
-  final String dataUrl;
+class _FrameView extends StatelessWidget {
+  const _FrameView({required this.bytes, this.dimmed = false});
+
+  final Uint8List bytes;
   final bool dimmed;
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final comma = dataUrl.indexOf(',');
-    if (comma < 0) {
-      return Icon(
-        Icons.broken_image_outlined,
-        size: 48,
-        color: colors.textSecondary,
-      );
-    }
-    try {
-      final bytes = base64Decode(dataUrl.substring(comma + 1));
-      return Opacity(
-        opacity: dimmed ? 0.45 : 1,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: InteractiveViewer(
-            maxScale: 4,
-            child: Image.memory(
-              bytes,
-              fit: BoxFit.contain,
-              gaplessPlayback: true,
-            ),
+    return Opacity(
+      opacity: dimmed ? 0.45 : 1,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: InteractiveViewer(
+          maxScale: 4,
+          child: Image.memory(
+            bytes,
+            fit: BoxFit.contain,
+            gaplessPlayback: true,
           ),
         ),
-      );
-    } on FormatException {
-      return Icon(
-        Icons.broken_image_outlined,
-        size: 48,
-        color: colors.textSecondary,
-      );
-    }
+      ),
+    );
   }
 }
 

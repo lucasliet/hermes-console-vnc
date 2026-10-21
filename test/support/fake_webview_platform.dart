@@ -96,10 +96,17 @@ class FakeWebViewController extends PlatformWebViewController {
   /// Every JavaScript bridge the code under test tried to expose.
   final List<String> javaScriptChannels = [];
 
+  /// Callbacks registered with [addJavaScriptChannel], keyed by channel name.
+  final Map<String, void Function(JavaScriptMessage)> channelHandlers = {};
+
   @override
   Future<void> addJavaScriptChannel(
     JavaScriptChannelParams javaScriptChannelParams,
-  ) async => javaScriptChannels.add(javaScriptChannelParams.name);
+  ) async {
+    javaScriptChannels.add(javaScriptChannelParams.name);
+    channelHandlers[javaScriptChannelParams.name] =
+        javaScriptChannelParams.onMessageReceived;
+  }
 
   @override
   Future<void> setOnPlatformPermissionRequest(

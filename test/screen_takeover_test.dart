@@ -213,10 +213,22 @@ void main() {
       'display.lease.acquire',
     ]);
     expect(webPlatform.controllers, isNotEmpty);
+    expect(webPlatform.last.javaScriptChannels, contains('TakeoverChannel'));
     final loaded = webPlatform.last.loadedRequests.single;
-    expect(loaded.path, '/bridge.html');
+    expect(loaded.scheme, 'https');
+    expect(loaded.host, 'appassets.androidplatform.net');
+    expect(loaded.path, '/assets/novnc/bridge.html');
     expect(loaded.queryParameters['ws'], contains('display_ticket=ticket-1'));
     expect(loaded.queryParameters['connecting'], 'Conectando…');
+
+    leases.add({
+      'lease': {'holder': 'agent', 'epoch': 1, 'since': 0},
+    });
+    await tester.pump();
+    expect(
+      find.text('Tienes el control. Toca, arrastra y escribe con normalidad.'),
+      findsOneWidget,
+    );
 
     leases.add({
       'lease': {'holder': 'agent', 'epoch': 3, 'since': 2},
@@ -329,7 +341,207 @@ void main() {
     );
     expect(webPlatform.controllers, isEmpty);
   });
+
+  testWidgets('a lost socket mints a new display ticket', (tester) async {
+    var observes = 0;
+    final controller = _controller((method, params) async {
+      if (method == 'display.observe') {
+        observes += 1;
+        return {
+          ..._runtime(),
+          'ticket': 'ticket-$observes',
+          'viewer_id': 'viewer-1',
+          'path': '/api/display/ws',
+        };
+      }
+      if (method == 'display.lease.acquire') {
+        return {
+          'lease': {
+            'holder': 'human',
+            'viewer_hash': 'hash-us',
+            'epoch': 2,
+            'since': 1,
+          },
+        };
+      }
+      return _runtime();
+    });
+    await _pump(tester, TakeoverScreen(controller: controller));
+    await tester.pump();
+    await tester.pump();
+    webPlatform.last.channelHandlers['TakeoverChannel']!(
+      const JavaScriptMessage(message: 'lost'),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(observes, 2);
+    expect(
+      webPlatform.last.loadedRequests.last.queryParameters['ws'],
+      contains('display_ticket=ticket-2'),
+    );
+    expect(
+      webPlatform.last.loadedRequests.last.queryParameters['ws'],
+      isNot(contains('display_ticket=ticket-1')),
+    );
+  });
+
+  testWidgets('a failure after acquire releases the lease', (tester) async {
+    final calls = <String>[];
+    final controller = ScreenController(
+      rpc: (method, params) async {
+        calls.add(method);
+        if (method == 'display.observe') {
+          return {
+            ..._runtime(),
+            'ticket': 'ticket-1',
+            'viewer_id': 'viewer-1',
+            'path': '/api/display/ws',
+          };
+        }
+        if (method == 'display.lease.acquire') {
+          return {
+            'lease': {
+              'holder': 'human',
+              'viewer_hash': 'hash-us',
+              'epoch': 1,
+              'since': 1,
+            },
+          };
+        }
+        return _runtime();
+      },
+      leasePayloads: const Stream.empty(),
+      dashboardBase: () => throw StateError('asset host failed'),
+    );
+    await _pump(tester, TakeoverScreen(controller: controller));
+    await tester.pump();
+    await tester.pump();
+    expect(calls, contains('display.lease.acquire'));
+    expect(calls.where((method) => method == 'display.lease.release'), [
+      'display.lease.release',
+    ]);
+    expect(
+      find.text('No se pudo tomar el control de la pantalla.'),
+      findsOneWidget,
+    );
+    expect(webPlatform.controllers, isEmpty);
+  });
+
+  testWidgets('leaving the screen releases the lease', (tester) async {
+    final calls = <String>[];
+    final controller = _controller((method, params) async {
+      calls.add(method);
+      if (method == 'display.observe') {
+        return {
+          ..._runtime(),
+          'ticket': 'ticket-1',
+          'viewer_id': 'viewer-1',
+          'path': '/api/display/ws',
+        };
+      }
+      if (method == 'display.lease.acquire') {
+        return {
+          'lease': {
+            'holder': 'human',
+            'viewer_hash': 'hash-us',
+            'epoch': 1,
+            'since': 1,
+          },
+        };
+      }
+      return _runtime();
+    });
+    await _pump(tester, TakeoverScreen(controller: controller));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Devolver'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(calls.where((method) => method == 'display.lease.release'), [
+      'display.lease.release',
+    ]);
+  });
+
+  testWidgets('backgrounding the app releases the lease', (tester) async {
+    final calls = <String>[];
+    final controller = _controller((method, params) async {
+      calls.add(method);
+      if (method == 'display.observe') {
+        return {
+          ..._runtime(),
+          'ticket': 'ticket-1',
+          'viewer_id': 'viewer-1',
+          'path': '/api/display/ws',
+        };
+      }
+      if (method == 'display.lease.acquire') {
+        return {
+          'lease': {
+            'holder': 'human',
+            'viewer_hash': 'hash-us',
+            'epoch': 4,
+            'since': 1,
+          },
+        };
+      }
+      return _runtime();
+    });
+    await _pump(tester, TakeoverScreen(controller: controller));
+    await tester.pump();
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    expect(calls.where((method) => method == 'display.lease.release'), [
+      'display.lease.release',
+    ]);
+  });
+
+  testWidgets('el vistazo no pregunta mientras el control está abierto', (
+    tester,
+  ) async {
+    var polls = 0;
+    final controller = _controller((method, params) async {
+      if (method == 'display.thumbnail') {
+        polls += 1;
+        return {'data_url': 'data:image/png;base64,$_png'};
+      }
+      if (method == 'display.observe') {
+        return {
+          ..._runtime(),
+          'ticket': 'ticket-1',
+          'viewer_id': 'viewer-1',
+          'path': '/api/display/ws',
+        };
+      }
+      if (method == 'display.lease.acquire') {
+        return {
+          'lease': {
+            'holder': 'human',
+            'viewer_hash': 'hash-us',
+            'epoch': 1,
+            'since': 1,
+          },
+        };
+      }
+      return _runtime();
+    });
+    await _pump(tester, ScreenPeekScreen(controller: controller));
+    await tester.pump();
+    final open = polls;
+    await tester.tap(find.text('Asumir el control'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('Devolver'), findsOneWidget);
+    await tester.pump(screenPeekPollInterval);
+    expect(polls, open);
+    navigatorOf(tester).pop();
+    await tester.pump();
+    await tester.pump();
+    expect(polls, greaterThan(open));
+  });
 }
+
+NavigatorState navigatorOf(WidgetTester tester) =>
+    tester.state<NavigatorState>(find.byType(Navigator));
 
 ScreenController _controller(
   DisplayRpc rpc, {

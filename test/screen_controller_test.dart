@@ -1,6 +1,4 @@
-import 'dart:convert';
-import 'dart:io';
-
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/connection.dart';
 import 'package:hermes_android/core/screen/screen_controller.dart';
@@ -188,8 +186,14 @@ void main() {
     );
     final lease = await controller.watchLease().first;
     expect(lease.viewerHash, 'other');
-    expect(displayLeaseTakenOver(lease, ourViewerHash: 'hash-us'), isTrue);
-    expect(displayLeaseTakenOver(lease, ourViewerHash: 'other'), isFalse);
+    expect(
+      displayLeaseTakenOver(lease, ourViewerHash: 'hash-us', ourEpoch: 2),
+      isTrue,
+    );
+    expect(
+      displayLeaseTakenOver(lease, ourViewerHash: 'other', ourEpoch: 3),
+      isFalse,
+    );
     expect(
       displayLeaseTakenOver(
         const DisplayLeaseInfo(
@@ -199,8 +203,22 @@ void main() {
           reason: '',
         ),
         ourViewerHash: 'hash-us',
+        ourEpoch: 0,
       ),
       isTrue,
+    );
+    expect(
+      displayLeaseTakenOver(
+        const DisplayLeaseInfo(
+          holder: 'agent',
+          viewerHash: '',
+          epoch: 1,
+          reason: '',
+        ),
+        ourViewerHash: 'hash-us',
+        ourEpoch: 2,
+      ),
+      isFalse,
     );
     expect(
       displayLeaseTakenOver(
@@ -211,6 +229,7 @@ void main() {
           reason: '',
         ),
         ourViewerHash: 'hash-us',
+        ourEpoch: 0,
       ),
       isFalse,
     );
@@ -272,6 +291,15 @@ void main() {
     expect(client.isConnected, isFalse);
   });
 
+  test(
+    'the bridge asks Flutter to reconnect instead of reusing the ticket',
+    () async {
+      final html = await rootBundle.loadString('assets/novnc/bridge.html');
+      expect(html, contains("postMessage('reconnect')"));
+      expect(html, isNot(contains('location.reload')));
+    },
+  );
+
   test('noVNC asset keys stay inside the vendored tree', () {
     expect(safeNovncAssetKey('/bridge.html'), 'assets/novnc/bridge.html');
     expect(safeNovncAssetKey('/core/rfb.js'), 'assets/novnc/core/rfb.js');
@@ -282,18 +310,23 @@ void main() {
     expect(safeNovncAssetKey('/core\\rfb.js'), isNull);
   });
 
-  test('loopback page can reload and cannot leave its origin', () {
-    final page = Uri.parse('http://127.0.0.1:4312/bridge.html?ws=1');
+  test('the noVNC page is https on the asset host and cannot leave it', () {
+    final page = screenAssetPageUri(
+      'wss://dash.example/api/display/ws?display_ticket=t',
+    );
+    expect(page.scheme, 'https');
+    expect(page.host, screenAssetHost);
+    expect(page.path, '/assets/novnc/bridge.html');
     expect(
-      screenNavigationDecision(page, 'http://127.0.0.1:4312/bridge.html'),
+      screenNavigationDecision(page, page.replace(query: '').toString()),
       NavigationDecision.navigate,
     );
     expect(
-      screenNavigationDecision(page, 'https://evil.test/bridge.html'),
+      screenNavigationDecision(page, 'http://${page.host}${page.path}'),
       NavigationDecision.prevent,
     );
     expect(
-      screenNavigationDecision(page, 'http://127.0.0.1/bridge.html'),
+      screenNavigationDecision(page, 'https://evil.test/bridge.html'),
       NavigationDecision.prevent,
     );
     expect(
@@ -301,39 +334,12 @@ void main() {
       NavigationDecision.prevent,
     );
     expect(
-      screenNavigationDecision(page, 'http://user:pass@127.0.0.1:4312/x'),
+      screenNavigationDecision(
+        page,
+        'https://user:pass@${page.host}${page.path}',
+      ),
       NavigationDecision.prevent,
     );
-  });
-
-  test('asset server serves the bridge and refuses escape', () async {
-    final server = await ScreenAssetServer.start();
-    addTearDown(server.dispose);
-
-    final bridge = await _get(server.baseUri.replace(path: '/bridge.html'));
-    expect(bridge.status, 200);
-    expect(bridge.body, contains('import RFB'));
-    expect(bridge.contentType, contains('text/html'));
-
-    final core = await _get(server.baseUri.replace(path: '/core/rfb.js'));
-    expect(core.status, 200);
-    expect(core.body, contains('MPL 2.0'));
-
-    final missing = await _get(server.baseUri.replace(path: '/nope.js'));
-    expect(missing.status, 404);
-
-    final posted = await _send(
-      server.baseUri.port,
-      'POST /bridge.html HTTP/1.1',
-    );
-    expect(posted, contains('405'));
-
-    final escaped = await _send(
-      server.baseUri.port,
-      'GET /core/%2e%2e/%2e%2e/pubspec.yaml HTTP/1.1',
-    );
-    expect(escaped, contains('404'));
-    expect(escaped, isNot(contains('name: hermes_android')));
   });
 }
 
@@ -342,33 +348,3 @@ ScreenController _controller(DisplayRpc rpc, {Uri? base}) => ScreenController(
   leasePayloads: const Stream.empty(),
   dashboardBase: () => base ?? Uri.parse('http://127.0.0.1:9119'),
 );
-
-Future<({int status, String body, String contentType})> _get(Uri uri) async {
-  final socket = await Socket.connect(InternetAddress.loopbackIPv4, uri.port);
-  socket.write(
-    'GET ${uri.path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n',
-  );
-  await socket.flush();
-  final raw = await utf8.decodeStream(socket);
-  final headerEnd = raw.indexOf('\r\n\r\n');
-  final header = headerEnd < 0 ? raw : raw.substring(0, headerEnd);
-  final body = headerEnd < 0 ? '' : raw.substring(headerEnd + 4);
-  final status = int.parse(header.split(' ')[1]);
-  var contentType = '';
-  for (final line in header.split('\r\n').skip(1)) {
-    final colon = line.indexOf(':');
-    if (colon < 0) continue;
-    if (line.substring(0, colon).toLowerCase() == 'content-type') {
-      contentType = line.substring(colon + 1).trim();
-    }
-  }
-  return (status: status, body: body, contentType: contentType);
-}
-
-Future<String> _send(int port, String requestLine) async {
-  final socket = await Socket.connect(InternetAddress.loopbackIPv4, port);
-  socket.write('$requestLine\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
-  await socket.flush();
-  final body = await utf8.decodeStream(socket);
-  return body;
-}

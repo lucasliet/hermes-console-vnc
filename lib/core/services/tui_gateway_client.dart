@@ -1779,7 +1779,8 @@ class TuiGatewayClient
   int? _authLatchEpoch;
 
   bool get _authLatched =>
-      _authLatchEpoch != null && _authLatchEpoch == _dashboard.credentialEpoch;
+      _authLatchEpoch != null &&
+      _authLatchEpoch == _dashboard.credentialEpoch;
 
   @override
   Listenable get linkListenable => _link;

@@ -28,39 +28,42 @@ const text = {
   connecting: params.get('connecting') || 'Connecting…',
   missing: params.get('missing') || 'Display URL missing',
   closed: params.get('closed') || 'Session ended',
-  lost: params.get('lost') || 'Connection lost. Tap to reload.',
+  lost: params.get('lost') || 'Connection lost. Tap to reconnect.',
   security: params.get('security') || 'Security failure',
   credentials: params.get('credentials') || 'The display asked for credentials',
 };
 
-function report(status) {
-  overlay.textContent = status || '';
-  overlay.classList.toggle('hidden', !status);
-  try { window.TakeoverChannel && window.TakeoverChannel.postMessage(status || 'connected'); } catch (error) {}
+function show(token, label) {
+  overlay.textContent = label || '';
+  overlay.classList.toggle('hidden', !label);
+  if (token === 'lost') overlay.dataset.reload = '1';
+  else delete overlay.dataset.reload;
+  try {
+    if (window.TakeoverChannel) window.TakeoverChannel.postMessage(token);
+  } catch (error) {}
 }
 
 if (!wsUrl) {
-  report(text.missing);
+  show('missing', text.missing);
 } else {
   overlay.textContent = text.connecting;
   const rfb = new RFB(document.getElementById('screen'), wsUrl, {});
   rfb.scaleViewport = true;
   rfb.resizeSession = false;
   rfb.clipViewport = true;
-  rfb.addEventListener('connect', () => report(''));
+  rfb.addEventListener('connect', () => show('connected', ''));
   rfb.addEventListener('disconnect', (event) => {
-    if (event.detail.clean) {
-      delete overlay.dataset.reload;
-      report(text.closed);
-    } else {
-      overlay.dataset.reload = '1';
-      report(text.lost);
-    }
+    if (event.detail.clean) show('closed', text.closed);
+    else show('lost', text.lost);
   });
-  rfb.addEventListener('securityfailure', () => report(text.security));
-  rfb.addEventListener('credentialsrequired', () => report(text.credentials));
+  rfb.addEventListener('securityfailure', () => show('security', text.security));
+  rfb.addEventListener('credentialsrequired', () => show('credentials', text.credentials));
   overlay.addEventListener('click', () => {
-    if (overlay.dataset.reload === '1') location.reload();
+    if (overlay.dataset.reload === '1') {
+      try {
+        if (window.TakeoverChannel) window.TakeoverChannel.postMessage('reconnect');
+      } catch (error) {}
+    }
   });
 }
 </script>

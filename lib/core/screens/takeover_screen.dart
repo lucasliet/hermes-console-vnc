@@ -38,14 +38,17 @@ class TakeoverScreen extends StatefulWidget {
 
 class _TakeoverScreenState extends State<TakeoverScreen>
     with WidgetsBindingObserver {
-  ScreenAssetServer? _server;
   DisplaySession? _session;
   StreamSubscription<DisplayLeaseInfo>? _events;
+  Uri? _page;
   var _phase = _Phase.checking;
   var _blocked = false;
   var _releasedByOther = false;
   var _holding = false;
+  var _foreground = true;
+  var _refreshing = false;
   var _ourViewerHash = '';
+  var _ourEpoch = 0;
   ScreenFailureKind? _failure;
 
   @override
@@ -57,7 +60,22 @@ class _TakeoverScreenState extends State<TakeoverScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.detached) _releaseLease();
+    switch (state) {
+      case AppLifecycleState.resumed:
+        final back = !_foreground;
+        _foreground = true;
+        if (back && mounted && _phase == _Phase.active && _session == null) {
+          unawaited(_refreshTicket());
+        }
+        break;
+      case AppLifecycleState.inactive:
+        break;
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        _foreground = false;
+        _releaseLease();
+    }
   }
 
   void _releaseLease() {
@@ -128,40 +146,88 @@ class _TakeoverScreenState extends State<TakeoverScreen>
     setState(() {
       _phase = _Phase.acquiring;
       _releasedByOther = false;
+      _failure = null;
     });
-    final session = await widget.controller.observe(profile: widget.profile);
-    final lease = await widget.controller.acquire(
-      session.viewerId,
-      profile: widget.profile,
-    );
-    final server = await ScreenAssetServer.start();
-    if (!mounted) {
-      await server.dispose();
-      unawaited(
-        widget.controller
-            .release(session.viewerId, profile: widget.profile)
-            .then<DisplayLeaseInfo>(
-              (value) => value,
-              onError: (_) => DisplayLeaseInfo.empty,
-            ),
+    try {
+      final session = await widget.controller.observe(profile: widget.profile);
+      final lease = await widget.controller.acquire(
+        session.viewerId,
+        profile: widget.profile,
       );
-      return;
+      _remember(session, lease);
+      if (!mounted) return;
+      final page = _pageFor(session);
+      await _listen();
+      if (!mounted) return;
+      setState(() {
+        _page = page;
+        _phase = _Phase.active;
+      });
+    } finally {
+      if (_phase != _Phase.active) _releaseLease();
     }
+  }
+
+  /// Replaces the single-use display ticket, and the lease when the viewer changes.
+  Future<void> _refreshTicket() async {
+    if (_refreshing || widget.readOnly || !_foreground) return;
+    _refreshing = true;
+    try {
+      final session = await widget.controller.observe(profile: widget.profile);
+      if (!mounted) return;
+      final page = _pageFor(session);
+      final previous = _session;
+      if (previous == null || previous.viewerId != session.viewerId) {
+        if (previous != null) _releaseLease();
+        final lease = await widget.controller.acquire(
+          session.viewerId,
+          profile: widget.profile,
+        );
+        _remember(session, lease);
+      } else {
+        _session = session;
+      }
+      if (!mounted) return;
+      setState(() => _page = page);
+    } catch (error) {
+      _releaseLease();
+      if (!mounted) return;
+      setState(() => _fail(error));
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  void _remember(DisplaySession session, DisplayLeaseInfo lease) {
+    _session = session;
+    _ourViewerHash = lease.viewerHash;
+    _ourEpoch = lease.epoch;
+    _holding = lease.heldByHuman;
+  }
+
+  Future<void> _listen() async {
     await _events?.cancel();
     _events = widget.controller.watchLease().listen(
       _onLease,
       onError: (Object _) {},
     );
-    _session = session;
-    _server = server;
-    _ourViewerHash = lease.viewerHash;
-    _holding = lease.heldByHuman;
-    setState(() => _phase = _Phase.active);
+  }
+
+  void _onBridge(String message) {
+    if (message != 'lost' && message != 'reconnect') return;
+    if (!_foreground || _phase != _Phase.active) return;
+    unawaited(_refreshTicket());
   }
 
   void _onLease(DisplayLeaseInfo lease) {
     if (!mounted || _phase != _Phase.active) return;
-    if (!displayLeaseTakenOver(lease, ourViewerHash: _ourViewerHash)) return;
+    if (!displayLeaseTakenOver(
+      lease,
+      ourViewerHash: _ourViewerHash,
+      ourEpoch: _ourEpoch,
+    )) {
+      return;
+    }
     setState(() => _releasedByOther = true);
   }
 
@@ -184,17 +250,14 @@ class _TakeoverScreenState extends State<TakeoverScreen>
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_events?.cancel() ?? Future<void>.value());
     _releaseLease();
-    unawaited(_server?.dispose() ?? Future<void>.value());
     super.dispose();
   }
 
-  Uri _pageUri(Strings strings) {
-    final session = _session!;
-    final server = _server!;
+  Uri _pageFor(DisplaySession session) {
     final ws = widget.controller
         .displayWsUri(session.path, session.ticket)
         .toString();
-    return server.pageUri(ws, copy: _bridgeCopy(strings));
+    return screenAssetPageUri(ws, copy: _bridgeCopy(Strings.of(context)));
   }
 
   Map<String, String> _bridgeCopy(Strings strings) => {
@@ -211,6 +274,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
     final strings = Strings.of(context);
     final colors = Theme.of(context).hermes;
     final active = _phase == _Phase.active;
+    final page = _page;
     return Scaffold(
       backgroundColor: active ? const Color(0xFF000000) : colors.background,
       appBar: HermesAppBar(
@@ -228,12 +292,31 @@ class _TakeoverScreenState extends State<TakeoverScreen>
       ),
       body: SafeArea(
         child: switch (_phase) {
-          _Phase.active => Column(
-            children: [
-              _banner(strings, colors),
-              Expanded(child: TakeoverView(pageUri: _pageUri(strings))),
-            ],
-          ),
+          _Phase.active =>
+            page == null
+                ? const SizedBox.shrink()
+                : Column(
+                    children: [
+                      _banner(strings, colors),
+                      Expanded(
+                        child: TakeoverView(
+                          pageUri: page,
+                          onBridgeMessage: _onBridge,
+                          onUnavailable: () {
+                            _releaseLease();
+                            if (!mounted) return;
+                            setState(
+                              () => _fail(
+                                const ScreenControllerException(
+                                  ScreenFailureKind.unavailable,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
           _Phase.stopped => _Centered(
             colors: colors,
             icon: Icons.desktop_windows_outlined,
