@@ -42,9 +42,18 @@ Hermes checkout into a temp directory and does not touch `~/.hermes`.
 ## pr-quality locally
 
 Docker, Gitleaks 8.28.0, and TruffleHog 3.97.0 are installed. `dockerd` uses
-`fuse-overlayfs` and starts on boot; `docker` works without sudo. The pinned
-images from `.github/workflows/pr-quality.yml` are already pulled. `reuse`
-6.2.0 is on PATH.
+`fuse-overlayfs`. The environment start script launches it on boot and
+`docker` then works without sudo. The pinned images from
+`.github/workflows/pr-quality.yml` are already pulled. `reuse` 6.2.0 is on
+PATH.
+
+If `docker info` cannot connect, the boot script did not run. Start the
+daemon, then retry the scan:
+
+```bash
+sudo sh -c 'setsid dockerd --host unix:///var/run/docker.sock >/var/log/dockerd.log 2>&1 < /dev/null &'
+sudo chmod 666 /var/run/docker.sock
+```
 
 ```bash
 flutter gen-l10n
