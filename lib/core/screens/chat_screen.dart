@@ -8086,9 +8086,7 @@ class _ChatScreenState extends State<ChatScreen>
   void _openBotScreen() {
     final connection = widget.connection;
     final named = widget.missionBotProfile?.name.trim() ?? '';
-    final profile = named.isNotEmpty
-        ? named
-        : Session.profileOwner(widget.session.profile);
+    final profile = named.isNotEmpty ? named : _effectiveSessionProfile;
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => OwnedResourceHost<TuiGatewayClient>(

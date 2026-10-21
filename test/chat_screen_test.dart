@@ -36638,6 +36638,37 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
   });
 
+  testWidgets('Bot Chat without a profile opens the screen of the active one', (
+    tester,
+  ) async {
+    await pumpChat(
+      tester,
+      connection: _remoteConn('conn-bot-screen-active'),
+      initialActiveProfile: 'infra',
+      session: const Session(
+        id: 'mob-bot-screen-active',
+        title: 'Bot Chat',
+        model: 'hermes-agent',
+        source: 'bot-mode',
+        messageCount: 0,
+        isActive: false,
+        preview: '',
+        startedAt: 1,
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('bot-chat-screen')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(
+      tester.widget<ScreenPeekScreen>(find.byType(ScreenPeekScreen)).profile,
+      'infra',
+    );
+    Navigator.of(tester.element(find.byType(ScreenPeekScreen))).pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  });
+
   testWidgets('a read-only Bot Chat still opens a read-only screen', (
     tester,
   ) async {
