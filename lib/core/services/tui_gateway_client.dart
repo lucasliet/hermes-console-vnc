@@ -1779,8 +1779,7 @@ class TuiGatewayClient
   int? _authLatchEpoch;
 
   bool get _authLatched =>
-      _authLatchEpoch != null &&
-      _authLatchEpoch == _dashboard.credentialEpoch;
+      _authLatchEpoch != null && _authLatchEpoch == _dashboard.credentialEpoch;
 
   @override
   Listenable get linkListenable => _link;
@@ -4909,6 +4908,50 @@ class TuiGatewayClient
     }
     return _capabilityReads.contains(method) ||
         (!readOnly && _capabilityWrites.contains(method));
+  }
+
+  static const Set<String> _displayReads = {
+    'display.status',
+    'display.thumbnail',
+  };
+
+  static const Set<String> _displayWrites = {
+    'display.start',
+    'display.observe',
+    'display.lease.acquire',
+    'display.lease.release',
+  };
+
+  /// Whether [method] may run on a display socket.
+  ///
+  /// Status and thumbnail are reads. Starting the desktop, minting a VNC
+  /// ticket and changing the lease are writes, so a read-only connection
+  /// cannot take the screen.
+  static bool displayRpcAllowed(String method, {required bool readOnly}) {
+    if (_displayReads.contains(method)) return true;
+    return !readOnly && _displayWrites.contains(method);
+  }
+
+  /// `display.*` calls for the bot-screen viewer.
+  ///
+  /// A read-only connection can poll status and thumbnails. Anything that
+  /// starts the desktop or mints a control ticket is refused before the
+  /// socket is dialed.
+  Future<Map<String, dynamic>> displayRequest(
+    String method,
+    Map<String, dynamic> params,
+  ) async {
+    if (!displayRpcAllowed(method, readOnly: _connection.readOnly)) {
+      throw TuiGatewayRpcError(method, 'Display request unavailable');
+    }
+    final profile = params['profile'];
+    if (profile != null &&
+        (profile is! String ||
+            !RegExp(r'^[a-z0-9][a-z0-9_-]{0,63}$').hasMatch(profile))) {
+      throw TuiGatewayRpcError(method, 'Invalid profile name');
+    }
+    await _connectForRequest('gateway.connect');
+    return _request(method, params);
   }
 
   late final BotProfileClient _botProfiles = BotProfileClient((

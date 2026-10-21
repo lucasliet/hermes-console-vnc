@@ -15,6 +15,7 @@ import '../screens/models_screen.dart';
 import '../screens/profiles_screen.dart';
 import '../screens/projects_center_screen.dart';
 import '../screens/soul_screen.dart';
+import '../screens/screen_peek_screen.dart';
 import '../screens/ssh_screen.dart';
 import '../screens/session_list_screen.dart';
 import '../screens/settings_screen.dart';
@@ -174,6 +175,27 @@ List<HermesToolDestination> buildHermesToolDestinations({
       enabled: enabled(),
       disabledReason: disabledReason(),
       builder: (_) => SshScreen(connection: conn!),
+    ),
+    HermesToolDestination(
+      id: 'bot-screen',
+      group: strings.drawerGroupInstance,
+      icon: Icons.desktop_windows_outlined,
+      label: strings.screenTitle,
+      enabled: enabled(),
+      disabledReason: disabledReason(),
+      builder: (_) {
+        final active = conn!;
+        return OwnedResourceHost<TuiGatewayClient>(
+          create: () => TuiGatewayClient(active),
+          release: (gateway) => gateway.close(),
+          builder: (_, gateway) => ScreenPeekScreen(
+            gateway: gateway,
+            readOnly: active.readOnly,
+            profile: connManager.activeProfileFor(active.id),
+            dashboardBase: Uri.parse(active.effectiveDashboardUrl),
+          ),
+        );
+      },
     ),
     HermesToolDestination(
       id: 'profiles',

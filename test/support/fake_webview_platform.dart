@@ -68,6 +68,9 @@ class FakeWebViewController extends PlatformWebViewController {
       javaScriptModes.add(javaScriptMode);
 
   @override
+  Future<void> setBackgroundColor(Color color) async {}
+
+  @override
   Future<void> setPlatformNavigationDelegate(
     PlatformNavigationDelegate handler,
   ) async => navigationDelegate = handler as FakeNavigationDelegate;

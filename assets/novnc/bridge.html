@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Hermes Screen</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  #screen { width: 100%; height: 100%; }
+  #overlay {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.72); color: #ddd; font: 14px/1.4 system-ui, sans-serif;
+    text-align: center; padding: 24px; z-index: 10; transition: opacity .25s;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<div id="overlay">Connecting…</div>
+<script type="module">
+import RFB from './core/rfb.js';
+
+const overlay = document.getElementById('overlay');
+const params = new URLSearchParams(location.search);
+const wsUrl = params.get('ws');
+const text = {
+  connecting: params.get('connecting') || 'Connecting…',
+  missing: params.get('missing') || 'Display URL missing',
+  closed: params.get('closed') || 'Session ended',
+  lost: params.get('lost') || 'Connection lost. Tap to reload.',
+  security: params.get('security') || 'Security failure',
+  credentials: params.get('credentials') || 'The display asked for credentials',
+};
+
+function report(status) {
+  overlay.textContent = status || '';
+  overlay.classList.toggle('hidden', !status);
+  try { window.TakeoverChannel && window.TakeoverChannel.postMessage(status || 'connected'); } catch (error) {}
+}
+
+if (!wsUrl) {
+  report(text.missing);
+} else {
+  overlay.textContent = text.connecting;
+  const rfb = new RFB(document.getElementById('screen'), wsUrl, {});
+  rfb.scaleViewport = true;
+  rfb.resizeSession = false;
+  rfb.clipViewport = true;
+  rfb.addEventListener('connect', () => report(''));
+  rfb.addEventListener('disconnect', (event) => {
+    if (event.detail.clean) {
+      delete overlay.dataset.reload;
+      report(text.closed);
+    } else {
+      overlay.dataset.reload = '1';
+      report(text.lost);
+    }
+  });
+  rfb.addEventListener('securityfailure', () => report(text.security));
+  rfb.addEventListener('credentialsrequired', () => report(text.credentials));
+  overlay.addEventListener('click', () => {
+    if (overlay.dataset.reload === '1') location.reload();
+  });
+}
+</script>
+</body>
+</html>
