@@ -529,7 +529,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('a connected page restores the automatic reconnect budget', (
+  testWidgets('a page that stays connected restores the reconnect budget', (
     tester,
   ) async {
     final gateway = _FakeGateway();
@@ -542,7 +542,84 @@ void main() {
       await tester.pump();
       expect(gateway.count('display.observe'), round);
       await _bridge(tester, webPlatform, 'connected');
+      await tester.pump(const Duration(seconds: 10));
     }
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('a page that connects and drops at once keeps a spent budget', (
+    tester,
+  ) async {
+    final gateway = _FakeGateway();
+    await _pump(tester, TakeoverScreen(controller: _controller(gateway.call)));
+    await tester.pump();
+    await tester.pump();
+    for (var round = 0; round < 6; round++) {
+      await _bridge(tester, webPlatform, 'lost');
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+      await _bridge(tester, webPlatform, 'connected');
+      await tester.pump(const Duration(seconds: 2));
+    }
+    expect(gateway.count('display.observe'), 3);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('a retry that fails leaves no timer behind', (tester) async {
+    final gateway = _FakeGateway();
+    await _pump(tester, TakeoverScreen(controller: _controller(gateway.call)));
+    await tester.pump();
+    await tester.pump();
+    await _bridge(tester, webPlatform, 'lost');
+    gateway.failObserve = true;
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(find.text('Reintentar'), findsOneWidget);
+    expect(gateway.count('display.lease.release'), 1);
+    await tester.pump(const Duration(minutes: 1));
+    expect(gateway.count('display.observe'), 2);
+    expect(gateway.count('display.lease.acquire'), 1);
+  });
+
+  testWidgets('backgrounding while the lease is being taken releases it', (
+    tester,
+  ) async {
+    final gate = Completer<void>();
+    final calls = <String>[];
+    final controller = _controller((method, params) async {
+      calls.add(method);
+      if (method == 'display.observe') {
+        return {
+          ..._runtime(),
+          'ticket': 'ticket-1',
+          'viewer_id': 'viewer-1',
+          'path': '/api/display/ws',
+        };
+      }
+      if (method == 'display.lease.acquire') {
+        await gate.future;
+        return {
+          'lease': {
+            'holder': 'human',
+            'viewer_hash': 'hash-us',
+            'epoch': 2,
+            'since': 1,
+          },
+        };
+      }
+      return _runtime();
+    });
+    await _pump(tester, TakeoverScreen(controller: controller));
+    await tester.pump();
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    gate.complete();
+    await tester.pump();
+    await tester.pump();
+    expect(calls.where((method) => method == 'display.lease.release'), [
+      'display.lease.release',
+    ]);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -738,6 +815,7 @@ class _FakeGateway {
     'epoch': 1,
     'since': 1,
   };
+  bool failObserve = false;
   final calls = <String>[];
 
   int count(String method) => calls.where((call) => call == method).length;
@@ -748,6 +826,7 @@ class _FakeGateway {
   ) async {
     calls.add(method);
     if (method == 'display.observe') {
+      if (failObserve) throw StateError('gateway down');
       return {
         ..._runtime(),
         'lease': observedLease,

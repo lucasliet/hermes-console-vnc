@@ -117,6 +117,7 @@ class _TakeoverViewState extends State<TakeoverView> {
         ),
       );
       await _lockDown(controller);
+      if (!mounted) return;
       await installScreenAssetHost(
         controller,
         onLoadFailed: () {

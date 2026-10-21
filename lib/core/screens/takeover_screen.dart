@@ -16,6 +16,9 @@ enum _Phase { checking, stopped, starting, acquiring, active, failed }
 /// Waits before each automatic reconnect of a lost display socket.
 const _reconnectDelays = [Duration(seconds: 1), Duration(seconds: 3)];
 
+/// How long a page must stay connected before the reconnect budget is back.
+const _stableAfter = Duration(seconds: 10);
+
 /// Full control of the bot's desktop over the display websocket.
 class TakeoverScreen extends StatefulWidget {
   /// Creates a takeover for [controller].
@@ -52,6 +55,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   var _refreshing = false;
   var _retries = 0;
   Timer? _retryTimer;
+  Timer? _stableTimer;
   var _ourViewerHash = '';
   var _ourEpoch = 0;
   ScreenFailureKind? _failure;
@@ -160,6 +164,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
         profile: widget.profile,
       );
       _remember(session, lease);
+      if (!_foreground) _releaseLease();
       if (!mounted) return;
       final page = _pageFor(session);
       await _listen();
@@ -199,6 +204,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
           profile: widget.profile,
         );
         _remember(session, lease);
+        if (!_foreground) _releaseLease();
       } else {
         _session = session;
       }
@@ -238,16 +244,21 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   /// Reacts to the page's status tokens.
   ///
   /// A lost socket is retried on its own a few times, spaced out, so a dead
-  /// display cannot make this screen mint tickets in a loop. After that the
-  /// page waits for a tap, which sends `reconnect`.
+  /// display cannot make this screen mint tickets in a loop. A page that
+  /// connects but drops again at once does not get the budget back: that
+  /// takes [_stableAfter] of staying connected. After the budget the page
+  /// waits for a tap, which sends `reconnect`.
   void _onBridge(String message) {
     if (!_foreground || _phase != _Phase.active) return;
     switch (message) {
       case 'connected':
-        _retries = 0;
+        _stableTimer?.cancel();
+        _stableTimer = Timer(_stableAfter, () => _retries = 0);
       case 'lost':
+        _stableTimer?.cancel();
         _scheduleReconnect();
       case 'reconnect':
+        _stableTimer?.cancel();
         _retries = 0;
         _retryTimer?.cancel();
         unawaited(_refreshTicket());
@@ -258,8 +269,14 @@ class _TakeoverScreenState extends State<TakeoverScreen>
     if (_releasedByOther || _retries >= _reconnectDelays.length) return;
     _retryTimer?.cancel();
     _retryTimer = Timer(_reconnectDelays[_retries++], () {
-      if (mounted) unawaited(_refreshTicket());
+      if (!mounted || _phase != _Phase.active) return;
+      unawaited(_refreshTicket());
     });
+  }
+
+  void _cancelTimers() {
+    _retryTimer?.cancel();
+    _stableTimer?.cancel();
   }
 
   void _onLease(DisplayLeaseInfo lease) {
@@ -275,12 +292,13 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   }
 
   void _releaseAndClose() {
-    _retryTimer?.cancel();
+    _cancelTimers();
     _releaseLease();
     if (mounted) Navigator.of(context).pop();
   }
 
   void _fail(Object error) {
+    _cancelTimers();
     _failure = error is ScreenControllerException
         ? error.kind
         : error is TuiGatewayRpcError && error.code == -32601
@@ -292,7 +310,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _retryTimer?.cancel();
+    _cancelTimers();
     unawaited(_events?.cancel() ?? Future<void>.value());
     _releaseLease();
     super.dispose();
