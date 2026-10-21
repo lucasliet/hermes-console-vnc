@@ -565,7 +565,9 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('a retry that fails leaves no timer behind', (tester) async {
+  testWidgets('a reconnect that fails shows the retry button and stays quiet', (
+    tester,
+  ) async {
     final gateway = _FakeGateway();
     await _pump(tester, TakeoverScreen(controller: _controller(gateway.call)));
     await tester.pump();
@@ -681,6 +683,78 @@ void main() {
     expect(gateway.count('display.observe'), 2);
     expect(gateway.count('display.lease.acquire'), 2);
     expect(find.text('Otro cliente asumió el control.'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('the echo of our own release is not a takeover', (tester) async {
+    final leases = StreamController<Map<String, dynamic>>.broadcast();
+    addTearDown(leases.close);
+    final gateway = _FakeGateway();
+    await _pump(
+      tester,
+      TakeoverScreen(
+        controller: _controller(gateway.call, leases: leases.stream),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    leases.add({
+      'lease': {'holder': 'agent', 'epoch': 3, 'since': 3},
+    });
+    await tester.pump();
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump();
+    expect(gateway.count('display.lease.acquire'), 2);
+    expect(find.text('Otro cliente asumió el control.'), findsNothing);
+
+    leases.add({
+      'lease': {
+        'holder': 'human',
+        'viewer_hash': 'hash-other',
+        'epoch': 5,
+        'since': 5,
+      },
+    });
+    await tester.pump();
+    expect(find.text('Otro cliente asumió el control.'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('a new attempt after a failure gets the reconnect budget back', (
+    tester,
+  ) async {
+    final gateway = _FakeGateway();
+    await _pump(tester, TakeoverScreen(controller: _controller(gateway.call)));
+    await tester.pump();
+    await tester.pump();
+    for (var i = 0; i < 2; i++) {
+      await _bridge(tester, webPlatform, 'lost');
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump();
+    }
+    expect(gateway.count('display.observe'), 3);
+
+    gateway.failObserve = true;
+    await _bridge(tester, webPlatform, 'reconnect');
+    await tester.pump();
+    await tester.pump();
+    gateway.failObserve = false;
+    await tester.tap(find.text('Reintentar'));
+    // Cancelling the previous (empty) lease stream completes in the root zone.
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Devolver'), findsOneWidget);
+    final before = gateway.count('display.observe');
+
+    await _bridge(tester, webPlatform, 'lost');
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump();
+    expect(gateway.count('display.observe'), before + 1);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 

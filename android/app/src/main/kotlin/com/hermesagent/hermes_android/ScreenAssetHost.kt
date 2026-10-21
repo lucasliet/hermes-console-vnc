@@ -122,6 +122,8 @@ private class AssetClient(
         request: WebResourceRequest,
         error: WebResourceError,
     ) {
+        // A load that a newer load replaces is aborted, not broken.
+        if (error.description?.contains("ERR_ABORTED") == true) return
         if (isNovncAsset(request.url)) onLoadFailed()
     }
 

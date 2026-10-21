@@ -152,6 +152,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   }
 
   Future<void> _acquire() async {
+    _retries = 0;
     setState(() {
       _phase = _Phase.acquiring;
       _releasedByOther = false;
@@ -280,7 +281,9 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   }
 
   void _onLease(DisplayLeaseInfo lease) {
-    if (!mounted || _phase != _Phase.active) return;
+    // Whoever holds no lease cannot have lost one: this also drops the echo of
+    // our own release.
+    if (!mounted || _phase != _Phase.active || _session == null) return;
     if (!displayLeaseTakenOver(
       lease,
       ourViewerHash: _ourViewerHash,
