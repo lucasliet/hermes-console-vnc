@@ -10,6 +10,7 @@ import android.webkit.WebViewClient
 import androidx.webkit.WebViewAssetLoader
 import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugins.webviewflutter.WebViewFlutterAndroidExternalApi
 import java.io.ByteArrayInputStream
@@ -29,29 +30,62 @@ object ScreenAssetHost {
     fun register(context: Context, engine: FlutterEngine) {
         val channel = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
         channel.setMethodCallHandler { call, result ->
-            if (call.method != "install") {
-                result.notImplemented()
-                return@setMethodCallHandler
+            when (call.method) {
+                "install" -> install(context, engine, channel, call, result)
+                "focus" -> focus(engine, call, result)
+                else -> result.notImplemented()
             }
-            val id = (call.arguments as? Number)?.toLong()
-            if (id == null) {
-                result.error("bad_args", "Missing web view id", null)
-                return@setMethodCallHandler
-            }
-            val webView = WebViewFlutterAndroidExternalApi.getWebView(engine, id)
-            if (webView == null) {
-                result.error("missing", "Web view is not available", null)
-                return@setMethodCallHandler
-            }
-            val loader =
-                WebViewAssetLoader.Builder()
-                    .setDomain(HOST)
-                    .addPathHandler("/assets/novnc/", NovncHandler(context))
-                    .build()
-            webView.webViewClient =
-                AssetClient(loader) { channel.invokeMethod("loadFailed", null) }
-            result.success(null)
         }
+    }
+
+    private fun install(
+        context: Context,
+        engine: FlutterEngine,
+        channel: MethodChannel,
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val id = (call.arguments as? Number)?.toLong()
+        if (id == null) {
+            result.error("bad_args", "Missing web view id", null)
+            return
+        }
+        val webView = WebViewFlutterAndroidExternalApi.getWebView(engine, id)
+        if (webView == null) {
+            result.error("missing", "Web view is not available", null)
+            return
+        }
+        val loader =
+            WebViewAssetLoader.Builder()
+                .setDomain(HOST)
+                .addPathHandler("/assets/novnc/", NovncHandler(context))
+                .build()
+        webView.webViewClient =
+            AssetClient(loader) { channel.invokeMethod("loadFailed", null) }
+        result.success(null)
+    }
+
+    /**
+     * Gives the embedded WebView real view focus, the prerequisite for the
+     * page to raise the soft keyboard from a JS-initiated focus: touches on
+     * the page grant it naturally, calls coming from the Flutter app bar
+     * do not.
+     */
+    private fun focus(
+        engine: FlutterEngine,
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val id = (call.arguments as? Number)?.toLong()
+        val webView = id?.let { WebViewFlutterAndroidExternalApi.getWebView(engine, it) }
+        if (webView == null) {
+            result.error("missing", "Web view is not available", null)
+            return
+        }
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
+        webView.requestFocus()
+        result.success(null)
     }
 }
 

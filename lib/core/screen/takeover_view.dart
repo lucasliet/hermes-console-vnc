@@ -74,10 +74,10 @@ class TakeoverView extends StatefulWidget {
   final VoidCallback? onUnavailable;
 
   @override
-  State<TakeoverView> createState() => _TakeoverViewState();
+  State<TakeoverView> createState() => TakeoverViewState();
 }
 
-class _TakeoverViewState extends State<TakeoverView> {
+class TakeoverViewState extends State<TakeoverView> {
   late final WebViewController _controller;
 
   @override
@@ -148,6 +148,50 @@ class _TakeoverViewState extends State<TakeoverView> {
           const GeolocationPermissionsResponse(allow: false, retain: false),
     );
     await platform.setOnShowFileSelector((_) async => const <String>[]);
+  }
+
+  /// Shows or hides the page's remote-typing keyboard.
+  ///
+  /// Showing first hands the native view focus to the WebView: without it
+  /// the page's focus() cannot raise the Android IME.
+  Future<void> showKeyboard(bool show) async {
+    if (show) await _focusNativeView();
+    await _runJs(
+      'window.hermesScreen && window.hermesScreen.'
+      '${show ? 'showKeyboard' : 'hideKeyboard'}()',
+    );
+  }
+
+  /// Focuses the embedded WebView through the asset-loader channel.
+  Future<void> _focusNativeView() async {
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    final platform = _controller.platform;
+    if (platform is! AndroidWebViewController) return;
+    try {
+      // Same channel that installed the asset host; it resolves the native
+      // view from the controller's webViewIdentifier.
+      const channel = MethodChannel(screenAssetChannelName);
+      await channel.invokeMethod<Object?>('focus', platform.webViewIdentifier);
+    } catch (_) {
+      // Without native focus the fallback is the floating page button.
+    }
+  }
+
+  /// Switches the page between touchpad gestures and direct touches.
+  ///
+  /// The gesture logic lives inside the page: an overlay on top of a hybrid
+  /// WebView never wins the native touch dispatch on Android.
+  Future<void> setTouchpad(bool on) =>
+      _runJs('window.hermesScreen && window.hermesScreen.setTouchpad($on)');
+
+  /// Runs [js] in the page, ignoring failures.
+  ///
+  /// Commands race the page's own reloads (fresh tickets), where the
+  /// execution is expected to fail; nothing depends on the result.
+  Future<void> _runJs(String js) async {
+    try {
+      await _controller.runJavaScript(js);
+    } catch (_) {}
   }
 
   @override

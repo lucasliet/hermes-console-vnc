@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
+import '../screen/screen_control_prefs.dart';
 import '../screen/screen_controller.dart';
 import '../screen/screen_server.dart';
 import '../screen/takeover_view.dart';
@@ -59,12 +60,37 @@ class _TakeoverScreenState extends State<TakeoverScreen>
   var _ourViewerHash = '';
   var _ourEpoch = 0;
   ScreenFailureKind? _failure;
+  var _touchpad = false;
+  var _keyboardOpen = false;
+  ScreenControlPrefs? _prefs;
+  final _viewKey = GlobalKey<TakeoverViewState>();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_loadPrefs());
     unawaited(_prepare());
+  }
+
+  Future<void> _loadPrefs() async {
+    final prefs = await ScreenControlPrefs.load();
+    _prefs = prefs;
+    if (!mounted) return;
+    setState(() => _touchpad = prefs.touchpadMode);
+  }
+
+  Future<void> _toggleTouchpad() async {
+    final next = !_touchpad;
+    setState(() => _touchpad = next);
+    unawaited(_viewKey.currentState?.setTouchpad(next));
+    await _prefs?.setTouchpad(next);
+  }
+
+  Future<void> _toggleKeyboard() async {
+    final next = !_keyboardOpen;
+    setState(() => _keyboardOpen = next);
+    await _viewKey.currentState?.showKeyboard(next);
   }
 
   @override
@@ -173,6 +199,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
       setState(() {
         _page = page;
         _phase = _Phase.active;
+        _keyboardOpen = false;
       });
     } finally {
       if (_phase != _Phase.active) _releaseLease();
@@ -210,7 +237,10 @@ class _TakeoverScreenState extends State<TakeoverScreen>
         _session = session;
       }
       if (!mounted) return;
-      setState(() => _page = page);
+      setState(() {
+        _page = page;
+        _keyboardOpen = false;
+      });
     } catch (error) {
       _releaseLease();
       if (!mounted) return;
@@ -255,6 +285,8 @@ class _TakeoverScreenState extends State<TakeoverScreen>
       case 'connected':
         _stableTimer?.cancel();
         _stableTimer = Timer(_stableAfter, () => _retries = 0);
+        // A (re)loaded page starts with the pad off; re-apply the mode.
+        unawaited(_viewKey.currentState?.setTouchpad(_touchpad));
       case 'lost':
         _stableTimer?.cancel();
         _scheduleReconnect();
@@ -263,6 +295,10 @@ class _TakeoverScreenState extends State<TakeoverScreen>
         _retries = 0;
         _retryTimer?.cancel();
         unawaited(_refreshTicket());
+      case 'kbd-on' when !_keyboardOpen:
+        setState(() => _keyboardOpen = true);
+      case 'kbd-off' when _keyboardOpen:
+        setState(() => _keyboardOpen = false);
     }
   }
 
@@ -323,7 +359,12 @@ class _TakeoverScreenState extends State<TakeoverScreen>
     final ws = widget.controller
         .displayWsUri(session.path, session.ticket)
         .toString();
-    return screenAssetPageUri(ws, copy: _bridgeCopy(Strings.of(context)));
+    // `pad` carries the touchpad mode at load/reconnect time, when the page
+    // cannot yet be commanded through runJavaScript.
+    return screenAssetPageUri(
+      ws,
+      copy: {..._bridgeCopy(Strings.of(context)), 'pad': _touchpad ? '1' : '0'},
+    );
   }
 
   Map<String, String> _bridgeCopy(Strings strings) => {
@@ -348,12 +389,31 @@ class _TakeoverScreenState extends State<TakeoverScreen>
         backgroundColor: active ? const Color(0xFF000000) : null,
         foregroundColor: active ? const Color(0xFFFFFFFF) : null,
         actions: [
-          if (active)
+          if (active) ...[
+            IconButton(
+              onPressed: () => unawaited(_toggleKeyboard()),
+              icon: Icon(
+                _keyboardOpen
+                    ? Icons.keyboard_hide_outlined
+                    : Icons.keyboard_outlined,
+              ),
+              tooltip: _keyboardOpen
+                  ? strings.screenHideKeyboard
+                  : strings.screenShowKeyboard,
+            ),
+            IconButton(
+              onPressed: () => unawaited(_toggleTouchpad()),
+              icon: Icon(_touchpad ? Icons.mouse : Icons.touch_app_outlined),
+              tooltip: _touchpad
+                  ? strings.screenSwitchToTouch
+                  : strings.screenSwitchToTouchpad,
+            ),
             TextButton.icon(
               onPressed: _releaseAndClose,
               icon: const Icon(Icons.back_hand_outlined, size: 18),
               label: Text(strings.screenHandBack),
             ),
+          ],
         ],
       ),
       body: SafeArea(
@@ -366,6 +426,7 @@ class _TakeoverScreenState extends State<TakeoverScreen>
                       _banner(strings, colors),
                       Expanded(
                         child: TakeoverView(
+                          key: _viewKey,
                           pageUri: page,
                           onBridgeMessage: _onBridge,
                           onUnavailable: () {

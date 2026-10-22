@@ -99,6 +99,19 @@ class FakeWebViewController extends PlatformWebViewController {
   /// Callbacks registered with [addJavaScriptChannel], keyed by channel name.
   final Map<String, void Function(JavaScriptMessage)> channelHandlers = {};
 
+  /// Every `runJavaScript` / `runJavaScriptReturningResult` script.
+  final List<String> javaScriptCalls = [];
+
+  @override
+  Future<void> runJavaScript(String javaScript) async =>
+      javaScriptCalls.add(javaScript);
+
+  @override
+  Future<Object> runJavaScriptReturningResult(String javaScript) async {
+    javaScriptCalls.add(javaScript);
+    return '';
+  }
+
   @override
   Future<void> addJavaScriptChannel(
     JavaScriptChannelParams javaScriptChannelParams,

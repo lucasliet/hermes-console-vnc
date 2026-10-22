@@ -285,10 +285,12 @@ class _FrameView extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: InteractiveViewer(
           maxScale: 4,
-          child: Image.memory(
-            bytes,
-            fit: BoxFit.contain,
-            gaplessPlayback: true,
+          child: SizedBox.expand(
+            child: Image.memory(
+              bytes,
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+            ),
           ),
         ),
       ),

@@ -295,7 +295,7 @@ void main() {
     'the bridge asks Flutter to reconnect instead of reusing the ticket',
     () async {
       final html = await rootBundle.loadString('assets/novnc/bridge.html');
-      expect(html, contains("postMessage('reconnect')"));
+      expect(html, contains("post('reconnect')"));
       expect(html, isNot(contains('location.reload')));
     },
   );

@@ -319,6 +319,10 @@
   "screenRefresh": "Actualizar ahora",
   "screenTakeover": "Asumir el control",
   "screenHandBack": "Devolver",
+  "screenShowKeyboard": "Mostrar teclado",
+  "screenHideKeyboard": "Ocultar teclado",
+  "screenSwitchToTouchpad": "Cambiar a modo touchpad",
+  "screenSwitchToTouch": "Cambiar a modo toque directo",
   "screenPollHint": "Se actualiza cada {seconds} s",
   "@screenPollHint": {
     "placeholders": {
